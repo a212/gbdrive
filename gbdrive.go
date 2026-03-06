@@ -206,14 +206,14 @@ func gdriveUploadAndReturnID(gdriveExe string, ver int, archiveFullPath, parentI
 	return "", nil
 }
 
-func gdriveUpdateExisting(gdriveExe string, ver int, archiveName, archiveFullPath, gdriveID string) error {
+func gdriveUpdateExisting(gdriveExe string, ver int, archiveFullPath, gdriveID string) error {
 	var args []string
 	if ver == 2 {
 		args = []string{"update"}
 	} else {
 		args = []string{"files", "update"}
 	}
-	args = append(args, "--name", archiveName, gdriveID, archiveFullPath)
+	args = append(args, gdriveID, archiveFullPath)
 	cmd := exec.Command(gdriveExe, args...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -358,7 +358,7 @@ func main() {
 			log.Fatalf("gdrive_id not configured for branch %s", branch)
 		}
 		gid := cfg.Repos[repoIdx].Branches[branchIdx].GdriveID
-		if err := gdriveUpdateExisting(gdriveExe, gdriveVer, archiveName, archiveFull, gid); err != nil {
+		if err := gdriveUpdateExisting(gdriveExe, gdriveVer, archiveFull, gid); err != nil {
 			log.Fatalf("gdrive update failed: %v", err)
 		}
 		log.Println("updated")
