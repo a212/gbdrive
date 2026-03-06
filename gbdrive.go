@@ -35,7 +35,7 @@ type RepoCfg struct {
 type Config struct {
 	ParentGdriveID string    `yaml:"parent_gdrive_id,omitempty"`
 	StoragePath    string    `yaml:"storage_path"`
-	Password       string    `yaml:"password"`
+	Password       string    `yaml:"password,omitempty"`
 	Tools          []Tool    `yaml:"tools"`
 	Repos          []RepoCfg `yaml:"repos"`
 }
@@ -178,29 +178,18 @@ func gitPullFromBundle(repoRoot, bundleFile, branch string) error {
 func gdriveUploadAndReturnID(gdriveExe string, ver int, archiveFullPath, parentID string) (string, error) {
 	var args []string
 	if ver == 2 {
-			args = []string{"upload"}
+		args = []string{"upload"}
 	} else {
-			args = []string{"files", "upload"}
+		args = []string{"files", "upload"}
 	}
 	if parentID != "" {
-			args = append(args, "--parent", parentID)
+		args = append(args, "--parent", parentID)
 	}
 	if ver != 2 {
-			args = append(args, "--print-only-id")
+		args = append(args, "--print-only-id")
 	}
 	args = append(args, archiveFullPath)
 	cmd := exec.Command(gdriveExe, args...)
-
-		// attempt to parse ID from stdout (common gdrive prints id or link)
-		//o := out.String()
-		// naive parse: look for "Uploaded  <name> (id: <id>)" or last token
-		//if idx := strings.Index(o, "id:"); idx != -1 {
-		//	rest := o[idx+3:]
-		//	fields := strings.Fields(rest)
-		//	if len(fields) > 0 {
-		//		return strings.Trim(fields[0], ")\n\r "), nil
-		//	}
-		//}
 
 	var out bytes.Buffer
 	var errb bytes.Buffer
@@ -220,9 +209,9 @@ func gdriveUploadAndReturnID(gdriveExe string, ver int, archiveFullPath, parentI
 func gdriveUpdateExisting(gdriveExe string, ver int, archiveName, archiveFullPath, gdriveID string) error {
 	var args []string
 	if ver == 2 {
-			args = []string{"update"}
+		args = []string{"update"}
 	} else {
-			args = []string{"files", "update"}
+		args = []string{"files", "update"}
 	}
 	args = append(args, "--name", archiveName, gdriveID, archiveFullPath)
 	cmd := exec.Command(gdriveExe, args...)
@@ -234,11 +223,11 @@ func gdriveUpdateExisting(gdriveExe string, ver int, archiveName, archiveFullPat
 func gdriveDownload(gdriveExe string, ver int, destPath, gdriveID string) error {
 	var args []string
 	if ver == 2 {
-			args = []string{"download"}
+		args = []string{"download", "--force", "--path"}
 	} else {
-			args = []string{"files", "download"}
+		args = []string{"files", "download", "--overwrite", "--destination"}
 	}
-	args = append(args, gdriveID, "--path", destPath)
+	args = append(args, destPath, gdriveID)
 	cmd := exec.Command(gdriveExe, args...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -259,6 +248,25 @@ func main() {
 	cfg, err := loadConfig(cfgPath)
 	if err != nil {
 		log.Fatalf("load config: %v", err)
+	}
+	scfg := cfg
+	storageCfgPath := filepath.Join(cfg.StoragePath, "gbdrive.yaml")
+	if fi, err := os.Stat(storageCfgPath); err == nil && !fi.IsDir() {
+		if scfg, err = loadConfig(storageCfgPath); err == nil {
+			if scfg.ParentGdriveID != "" {
+				cfg.ParentGdriveID = scfg.ParentGdriveID
+			}
+			if cfg.Password == "" {
+				cfg.Password = scfg.Password
+			}
+			if len(scfg.Repos) > 0 {
+				cfg.Repos = scfg.Repos
+			}
+		} else {
+			log.Fatalf("failed to load storage config %s: %v", storageCfgPath, err)
+		}
+	} else {
+		storageCfgPath = cfgPath
 	}
 
 	wd, _ := os.Getwd()
@@ -329,16 +337,16 @@ func main() {
 			if repoIdx == -1 {
 				// add repo entry
 				newRepo := RepoCfg{Folder: filepath.Base(repoRoot)}
-				cfg.Repos = append(cfg.Repos, newRepo)
-				repoIdx = len(cfg.Repos) - 1
+				scfg.Repos = append(scfg.Repos, newRepo)
+				repoIdx = len(scfg.Repos) - 1
 			}
 			// ensure branch exists
 			if branchIdx == -1 {
-				cfg.Repos[repoIdx].Branches = append(cfg.Repos[repoIdx].Branches, BranchCfg{Name: branch, GdriveID: id})
+				scfg.Repos[repoIdx].Branches = append(scfg.Repos[repoIdx].Branches, BranchCfg{Name: branch, GdriveID: id})
 			} else {
-				cfg.Repos[repoIdx].Branches[branchIdx].GdriveID = id
+				scfg.Repos[repoIdx].Branches[branchIdx].GdriveID = id
 			}
-			if err := saveConfig(cfgPath, cfg); err != nil {
+			if err := saveConfig(storageCfgPath, scfg); err != nil {
 				log.Fatalf("save config failed: %v", err)
 			}
 			log.Printf("uploaded and saved gdrive_id %s", id)
@@ -409,4 +417,3 @@ func main() {
 
 	log.Fatalf("unknown argument: %s", args[0])
 }
-
