@@ -1,0 +1,17 @@
+storage_path: z:\
+parent_gdrive_id: 0BxxYYzzAA111222_0
+password: MyPasswd
+tools:
+  - name: gdrive 
+    path: c:\Users\test\bin
+    ver: 2
+  - name: 7z
+    path: c:\Program Files\7z\
+repos:
+  - folder: rep
+    name: repArc
+    branches:
+      - name: main
+        gdrive_id: 0BxxYYzzAA111222_1
+      - name: fix
+        gdrive_id: 0BxxYYzzAA111222_3
