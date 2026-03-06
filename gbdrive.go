@@ -269,6 +269,19 @@ func main() {
 		storageCfgPath = cfgPath
 	}
 
+	args := os.Args[1:]
+	if len(args) == 0 {
+		fmt.Println(`Usage: gbdrive <command> [args]
+
+Commands:
+	<days> [<tag>] create bundle for last <days> days and pack
+	ch [<branch>]  extract archive and git pull
+	up [new]       upload archive (or upload new and save gdrive_id)
+	dn             download archive
+	`)
+		return
+	}
+
 	wd, _ := os.Getwd()
 	repoRoot, err := findGitRoot(wd)
 	if err != nil {
@@ -276,7 +289,11 @@ func main() {
 	}
 	branch, err := getCurrentBranch(repoRoot)
 	if err != nil {
-		log.Fatalf("get branch: %v", err)
+		if len(args) == 2 && args[0] == "ch" {
+			branch = args[1]
+		} else {
+			log.Fatalf("get branch: %v", err)
+		}
 	}
 
 	repoName, repoIdx, branchIdx := repoConfigFor(cfg, repoRoot, branch)
@@ -289,8 +306,8 @@ func main() {
 	gdrivePathCfg, gdriveVer := findTool(cfg, "gdrive")
 	gdriveExe := gdriveExecutableFromPath(gdrivePathCfg)
 
-	args := os.Args[1:]
-	if len(args) == 0 {
+	switch args[0] {
+	case "ch":
 		// no args: extract and pull
 		if _, err := os.Stat(archiveFull); os.IsNotExist(err) {
 			log.Fatalf("archive not found: %s", archiveFull)
@@ -314,10 +331,6 @@ func main() {
 		_ = os.Remove(tmpBundle)
 		log.Println("pulled from bundle")
 		return
-	}
-
-	// up/dn/up new handling
-	switch args[0] {
 	case "up":
 		// up or up new
 		if _, err := os.Stat(archiveFull); os.IsNotExist(err) {
