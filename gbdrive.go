@@ -398,6 +398,7 @@ Commands:
 		if len(args) > 1 && args[1] != "" {
 			gitArgs = append(gitArgs, args[1])
 		}
+		gitArgs = append(gitArgs, "--")
 		gitCmd := exec.Command("git", gitArgs...)
 		gitCmd.Dir = repoRoot
 		gitStdout, err := gitCmd.StdoutPipe()
