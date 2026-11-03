@@ -267,9 +267,15 @@ func gdriveDownload(gdriveExe string, ver int, destPath, gdriveID string) error 
 	return cmd.Run()
 }
 
-func gdriveFindFile(gdriveExe string, parentID, fileName string) (string, error) {
+func gdriveFindFile(gdriveExe string, ver int, parentID, fileName string) (string, error) {
 	query := "'" + strings.ReplaceAll(parentID, "'", "\\'") + "' in parents and name = '" + strings.ReplaceAll(fileName, "'", "\\'") + "' and trashed = false"
-	cmd := exec.Command(gdriveExe, "list", "--query", query, "--max", "100")
+	var args []string
+	if ver == 2 {
+		args = []string{"list", "--query", query, "--max", "100"}
+	} else {
+		args = []string{"files", "list", "--query", query, "--max", "100", "--full-name"}
+	}
+	cmd := exec.Command(gdriveExe, args...)
 	var out bytes.Buffer
 	var errb bytes.Buffer
 	cmd.Stdout = &out
@@ -445,7 +451,7 @@ Commands:
 			gid = cfg.Repos[repoIdx].Branches[branchIdx].GdriveID
 		}
 		if gid == "" {
-			gid, err = gdriveFindFile(gdriveExe, cfg.ParentGdriveID, archiveName)
+			gid, err = gdriveFindFile(gdriveExe, gdriveVer, cfg.ParentGdriveID, archiveName)
 			if err != nil {
 				log.Fatalf("find archive in Google Drive: %v", err)
 			}
