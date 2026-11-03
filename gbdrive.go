@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -175,6 +176,27 @@ func gitPullFromBundle(repoRoot, bundleFile, branch string) error {
 	return err
 }
 
+func gitBranchExists(repoRoot, branch string) bool {
+	_, err := runCmdCapture(repoRoot, "git", "show-ref", "--verify", "--quiet", "refs/heads/"+branch)
+	return err == nil
+}
+
+func gitCheckoutOrCreateFromBundle(repoRoot, bundleFile, branch string) error {
+	if gitBranchExists(repoRoot, branch) {
+		if _, err := runCmdCapture(repoRoot, "git", "checkout", branch); err != nil {
+			return err
+		}
+		return gitPullFromBundle(repoRoot, bundleFile, branch)
+	}
+
+	// Fetching directly into refs/heads creates the local branch at the bundle's tip.
+	if _, err := runCmdCapture(repoRoot, "git", "fetch", bundleFile, branch+":refs/heads/"+branch); err != nil {
+		return err
+	}
+	_, err := runCmdCapture(repoRoot, "git", "checkout", branch)
+	return err
+}
+
 func gdriveUploadAndReturnID(gdriveExe string, ver int, archiveFullPath, parentID string) (string, error) {
 	var args []string
 	if ver == 2 {
@@ -199,11 +221,22 @@ func gdriveUploadAndReturnID(gdriveExe string, ver int, archiveFullPath, parentI
 		return "", fmt.Errorf("%v: %s", err, errb.String())
 	}
 	o := out.String()
-	parts := strings.Fields(o)
-	if len(parts) > 0 {
-		return strings.Trim(parts[len(parts)-1], ")\n\r "), nil
+	if ver == 2 {
+		// gdrive 2.1.0 does not support --print-only-id and prints upload
+		// progress together with the uploaded file ID.
+		idPattern := regexp.MustCompile(`\b[A-Za-z0-9_-]{20,}\b`)
+		ids := idPattern.FindAllString(o, -1)
+		if len(ids) == 1 {
+			return ids[0], nil
+		}
+		return "", fmt.Errorf("could not determine uploaded file ID from gdrive output: %q", strings.TrimSpace(o))
 	}
-	return "", nil
+	// The Rust CLI supports --print-only-id, so its output should be a single ID.
+	parts := strings.Fields(o)
+	if len(parts) == 1 {
+		return strings.Trim(parts[0], ")\n\r "), nil
+	}
+	return "", fmt.Errorf("unexpected gdrive --print-only-id output: %q", strings.TrimSpace(o))
 }
 
 func gdriveUpdateExisting(gdriveExe string, ver int, archiveFullPath, gdriveID string) error {
@@ -232,6 +265,25 @@ func gdriveDownload(gdriveExe string, ver int, destPath, gdriveID string) error 
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
+}
+
+func gdriveFindFile(gdriveExe string, parentID, fileName string) (string, error) {
+	query := "'" + strings.ReplaceAll(parentID, "'", "\\'") + "' in parents and name = '" + strings.ReplaceAll(fileName, "'", "\\'") + "' and trashed = false"
+	cmd := exec.Command(gdriveExe, "list", "--query", query, "--max", "100")
+	var out bytes.Buffer
+	var errb bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &errb
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("%v: %s", err, errb.String())
+	}
+	for _, line := range strings.Split(out.String(), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) >= 2 && fields[1] == fileName && fields[0] != "Id" {
+			return fields[0], nil
+		}
+	}
+	return "", fmt.Errorf("file %q not found in Google Drive folder %s", fileName, parentID)
 }
 
 func main() {
@@ -277,7 +329,7 @@ Commands:
 	<days> [<tag>] create bundle for last <days> days and pack
 	ch [<branch>]  extract archive and git pull
 	up [new]       upload archive (or upload new and save gdrive_id)
-	dn             download archive
+	dn [<branch>]  download archive (find and register branch if needed)
 	`)
 		return
 	}
@@ -288,12 +340,12 @@ Commands:
 		log.Fatalf("find git root: %v", err)
 	}
 	branch, err := getCurrentBranch(repoRoot)
+	if len(args) == 2 && args[0] == "ch" {
+		branch = args[1]
+		err = nil
+	}
 	if err != nil {
-		if len(args) == 2 && args[0] == "ch" {
-			branch = args[1]
-		} else {
-			log.Fatalf("get branch: %v", err)
-		}
+		log.Fatalf("get branch: %v", err)
 	}
 
 	repoName, repoIdx, branchIdx := repoConfigFor(cfg, repoRoot, branch)
@@ -325,7 +377,11 @@ Commands:
 			log.Fatalf("7z extract failed: %v", err)
 		}
 		outFile.Close()
-		if err := gitPullFromBundle(repoRoot, tmpBundle, branch); err != nil {
+		if len(args) == 2 {
+			if err := gitCheckoutOrCreateFromBundle(repoRoot, tmpBundle, branch); err != nil {
+				log.Fatalf("checkout/pull from bundle failed: %v", err)
+			}
+		} else if err := gitPullFromBundle(repoRoot, tmpBundle, branch); err != nil {
 			log.Fatalf("git pull from bundle failed: %v", err)
 		}
 		_ = os.Remove(tmpBundle)
@@ -378,11 +434,34 @@ Commands:
 		return
 
 	case "dn":
-		// download archive
-		if repoIdx == -1 || branchIdx == -1 || cfg.Repos[repoIdx].Branches[branchIdx].GdriveID == "" {
-			log.Fatalf("gdrive_id not configured for branch %s", branch)
+		if len(args) > 1 {
+			branch = args[1]
+			repoName, repoIdx, branchIdx = repoConfigFor(cfg, repoRoot, branch)
+			archiveName = fmt.Sprintf("%s.%s.7z", repoName, branch)
+			archiveFull = filepath.Join(cfg.StoragePath, archiveName)
 		}
-		gid := cfg.Repos[repoIdx].Branches[branchIdx].GdriveID
+		gid := ""
+		if repoIdx != -1 && branchIdx != -1 {
+			gid = cfg.Repos[repoIdx].Branches[branchIdx].GdriveID
+		}
+		if gid == "" {
+			gid, err = gdriveFindFile(gdriveExe, cfg.ParentGdriveID, archiveName)
+			if err != nil {
+				log.Fatalf("find archive in Google Drive: %v", err)
+			}
+			if repoIdx == -1 {
+				scfg.Repos = append(scfg.Repos, RepoCfg{Folder: filepath.Base(repoRoot)})
+				repoIdx = len(scfg.Repos) - 1
+			}
+			if branchIdx == -1 {
+				scfg.Repos[repoIdx].Branches = append(scfg.Repos[repoIdx].Branches, BranchCfg{Name: branch, GdriveID: gid})
+			} else {
+				scfg.Repos[repoIdx].Branches[branchIdx].GdriveID = gid
+			}
+			if err := saveConfig(storageCfgPath, scfg); err != nil {
+				log.Fatalf("save config failed: %v", err)
+			}
+		}
 		if err := gdriveDownload(gdriveExe, gdriveVer, cfg.StoragePath, gid); err != nil {
 			log.Fatalf("gdrive download failed: %v", err)
 		}
